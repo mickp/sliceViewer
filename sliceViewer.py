@@ -19,13 +19,37 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 from collections import namedtuple
+import warnings
 
 View = namedtuple('View', ['mapping', 'axes'])
 
 class SliceViewer(object):
     def __init__(self, source, scaling=None):
         self.source = source
-        self.scaling = scaling
+
+        if isinstance(scaling, np.ndarray):
+            # handled separately because numpy throws a ValueError
+            # if you test on an array with more than one element.
+            scaling = list(scaling.flat)
+        
+        if isinstance(scaling, list):
+            # Scaling is a list.
+            if len(scaling) == 3:
+                # One elements for each dimension.
+                self.scaling = np.array(scaling)
+            elif len(scaling) == 1:
+                # Common scaling for all dimensions.
+                self.scaling = np.array(3 * scaling)
+            else: 
+                warnings.warn("Scaling must have 1 or 3 elements; using scaling=1.")
+                self.scaling = np.array(3 * [1])
+        elif scaling:
+            # Common scaling for all dimensions.
+            self.scaling = np.array(3 * [scaling])
+        else:
+            # Default to 1:1 scaling.
+            self.scaling = np.array(3 * [1])
+
         self.indices = [dimSize / 2 for dimSize in source.shape]
         self.cursors = []
         self.figure, self.subplots = self.makeFigure()
@@ -38,7 +62,6 @@ class SliceViewer(object):
         self.figure.show()
         self.settings = {'log':False,
                          'autoscale':True}
-
 
 
     def makeFigure(self):
@@ -56,30 +79,26 @@ class SliceViewer(object):
                  # XY, Z into screen
                  'xy': View((2,1,0), 
                         aXY),
-                 # ZY, X into s
+                 # ZY, X into screen
                  'zy': View((0,1,2),
                         f.add_subplot(gs[0, 0], sharex=None, sharey=aXY, axisbg='#bbbbbb')),
                  # XZ, Y into screen
                  'xz': View((1,2,0),
                         f.add_subplot(gs[1, 1], sharex=aXY, sharey=None, axisbg='#bbbbbb')),
                 }
-        
-        for mapping, ax in subplots.itervalues():
-            if self.scaling:
-                h = mapping[0]
-                v = mapping[1]
-                extent = [0, self.scaling[h] * self.source.shape[h],
-                          0, self.scaling[v] * self.source.shape[v]]
-            else:
-                extent = None
 
+        for label, (mapping, ax) in subplots.iteritems():
+            h = mapping.index(0)
+            v = mapping.index(1)
+            extent = [0, self.scaling[h] * self.source.shape[h],
+                      0, self.scaling[v] * self.source.shape[v]]
+            
             prIndices = [self.indices[i] if mapping[i] == 2
                          else slice(None)
                          for i in range(3)]
-            projection = self.source[prIndices]
-            
-            
-            if mapping[0] == 0:
+            projection = self.source[prIndices]  
+
+            if h == 0:
                 # Data must be rotated 90 degrees.
                 # rot = matplotlib.transforms.Affine2D().rotate_deg(90)
                 # im.set_transform(im.get_transform() + rot)
@@ -90,11 +109,11 @@ class SliceViewer(object):
             else:
                 ax.imshow(projection, interpolation='none', extent=extent)
 
-            if mapping[-1] == 0:
+            if label in ['xy', 'xz']:
                 ax.yaxis.set_visible(False)
-            if mapping[1] == 1:
+            if label in ['xy', 'zy']:
                 ax.xaxis.set_visible(False)
-            if mapping == (2, 1, 0):
+            if label in ['xy']:
                 ax.set_aspect('equal')
             else:
                 ax.set_aspect('auto')
@@ -103,10 +122,11 @@ class SliceViewer(object):
         ## Add cursors.
         # Two lines on the XY plot and one of each of the Z projections
         # can be dragged around to change the slicing indices (self.indices).
-        subplots['xy'].axes.axhline(self.indices[1], color='r')
-        subplots['xy'].axes.axvline(self.indices[2], color='r')
-        subplots['xz'].axes.axhline(self.indices[0], color='r')
-        subplots['zy'].axes.axvline(self.indices[0], color='r')
+        xyz = self.indices * self.scaling
+        subplots['xy'].axes.axhline(xyz[1], color='r')
+        subplots['xy'].axes.axvline(xyz[2], color='r')
+        subplots['xz'].axes.axhline(xyz[0], color='r')
+        subplots['zy'].axes.axvline(xyz[0], color='r')
         # Store references to the lines and useful indices in self.cursors.
         lines = [l for ax in f.axes for l in ax.lines]
         # The index into self.indices modified by the cursor.
@@ -132,9 +152,10 @@ class SliceViewer(object):
         # Update any picked cursors.
         self.event = event
         for c in self.cursors:
-            if c['picked']:
+            if c['picked'] and event.xdata and event.ydata:
                 iNow = [event.xdata, event.ydata][c['ordinate']]
-                self.indices[c['index']] = iNow
+                iNow /= self.scaling[c['index']]
+                self.indices[c['index']] = int(iNow)
         self.update()
 
 
@@ -208,7 +229,7 @@ class SliceViewer(object):
             else:
                 projection = self.source[prIndices]
 
-            if mapping[-1] != 0:
+            if mapping.index(0) == 0:
                 axes.images[0].set_data(projection.T)
             else:
                 axes.images[0].set_data(projection)
@@ -216,10 +237,11 @@ class SliceViewer(object):
             if self.settings['autoscale']:
                 axes.images[0].autoscale()
 
-        self.subplots['xy'].axes.lines[0].set_ydata((self.indices[1], self.indices[1]))
-        self.subplots['xy'].axes.lines[1].set_xdata((self.indices[2], self.indices[2]))
-        self.subplots['xz'].axes.lines[0].set_ydata((self.indices[0], self.indices[0]))
-        self.subplots['zy'].axes.lines[0].set_xdata((self.indices[0], self.indices[0]))
+        xyz = self.indices * self.scaling
+        self.subplots['xy'].axes.lines[0].set_ydata((xyz[1], xyz[1]))
+        self.subplots['xy'].axes.lines[1].set_xdata((xyz[2], xyz[2]))
+        self.subplots['xz'].axes.lines[0].set_ydata((xyz[0], xyz[0]))
+        self.subplots['zy'].axes.lines[0].set_xdata((xyz[0], xyz[0]))
 
         text = "Autoscale " + ['off','on'][self.settings['autoscale']] + '\n'
         text += "Log scale " + ['off','on'][self.settings['log']] + '\n'
