@@ -23,6 +23,21 @@ import warnings
 
 View = namedtuple('View', ['mapping', 'axes'])
 
+
+class DataCursor(object):
+    def __init__(self, line, ordinate, index):
+        self.line = line
+        self.ordinate = ordinate
+        self.index = index
+        self.picked = None
+
+
+    def update(self, values):
+        func = [self.line.set_xdata, self.line.set_ydata][self.ordinate]
+        value = values[self.index]
+        return func((value, value))
+
+
 class SliceViewer(object):
     def __init__(self, source, scaling=None):
         self.source = source
@@ -105,36 +120,34 @@ class SliceViewer(object):
                 # This transform does not work.
                 # rot = matplotlib.transforms.Affine2D().rotate_deg(90)
                 # ax.set_transform(ax.get_transform() + rot)
-                ax.imshow(projection.T, interpolation='none', extent=extent)
-            else:
-                ax.imshow(projection, interpolation='none', extent=extent)
+                projection = projection.T       
+
+            ax.imshow(projection, interpolation='none', extent=extent, origin='lower')
 
             if label in ['xy', 'xz']:
                 ax.yaxis.set_visible(False)
+            
             if label in ['xy', 'zy']:
                 ax.xaxis.set_visible(False)
+            
             if label in ['xy']:
-                ax.set_aspect('equal')
+                ax.set_aspect('equal')        
             else:
                 ax.set_aspect('auto')
+
             gs.tight_layout(f, h_pad=0.0, w_pad=0.0 )
 
-        ## Add cursors.
-        # Two lines on the XY plot and one of each of the Z projections
-        # can be dragged around to change the slicing indices (self.indices).
+        ## Add cursors. Two cursors on each plot can be dragged around
+        # to change the slicing indices (self.indices).
         xyz = self.indices * self.scaling
-        subplots['xy'].axes.axhline(xyz[1], color='r')
-        subplots['xy'].axes.axvline(xyz[2], color='r')
-        subplots['xz'].axes.axhline(xyz[0], color='r')
-        subplots['zy'].axes.axvline(xyz[0], color='r')
-        # Store references to the lines and useful indices in self.cursors.
-        lines = [l for ax in f.axes for l in ax.lines]
-        # The index into self.indices modified by the cursor.
-        indices = [1, 2, 0, 0]
-        # The ordinate (event.xdata or event.ydata) to use.
-        ordinates = [1, 0, 0, 1]
-        for l, i, o in zip(lines, indices, ordinates):
-            self.cursors.append(dict(line=l, index=i, ordinate=o, picked=None))
+        indices = {'xy': (2, 1), 
+                   'xz': (2, 0),
+                   'zy': (0, 1)}
+        for p, (i, j) in indices.iteritems():
+            vcsr = subplots[p].axes.axvline(xyz[i], color='r')
+            hcsr = subplots[p].axes.axhline(xyz[j], color='r')
+            self.cursors.append(DataCursor(vcsr, 0, i))
+            self.cursors.append(DataCursor(hcsr, 1, j))
 
         # Return the figure and subplots.
         return f, subplots
@@ -143,35 +156,35 @@ class SliceViewer(object):
     def onMousePress(self, event):
         # Test each cursor to see if it was picked.
         for c in self.cursors:
-            contains, parms = c['line'].contains(event)
+            contains, parms = c.line.contains(event)
             if contains and event.button == 1:
-                c['picked'] = True
+                c.picked = True
 
 
     def onMouseMove(self, event):
         # Update any picked cursors.
         self.event = event
         for c in self.cursors:
-            if c['picked'] and event.xdata and event.ydata:
-                iNow = [event.xdata, event.ydata][c['ordinate']]
-                iNow /= self.scaling[c['index']]
-                self.indices[c['index']] = int(iNow)
+            if c.picked and event.xdata and event.ydata:
+                iNow = [event.xdata, event.ydata][c.ordinate]
+                iNow /= self.scaling[c.index]
+                self.indices[c.index] = int(iNow)
         self.update()
 
 
     def onMouseRelease(self, event):
         # Release picked cursors.
         for c in self.cursors:
-            contains, parms = c['line'].contains(event)
+            contains, parms = c.line.contains(event)
             if contains and event.button == 1:
-                c['picked'] = False
+                c.picked = False
 
 
     def onKey(self, event):
         deltaMap = {'pagedown': (0, -1),
                     'pageup':   (0, +1),
-                    'up':       (1, -1),
-                    'down':     (1, +1),
+                    'up':       (1, +1),
+                    'down':     (1, -1),
                     'left':     (2, -1),
                     'right':    (2, +1),
                     }
@@ -237,11 +250,9 @@ class SliceViewer(object):
             if self.settings['autoscale']:
                 axes.images[0].autoscale()
 
-        xyz = self.indices * self.scaling
-        self.subplots['xy'].axes.lines[0].set_ydata((xyz[1], xyz[1]))
-        self.subplots['xy'].axes.lines[1].set_xdata((xyz[2], xyz[2]))
-        self.subplots['xz'].axes.lines[0].set_ydata((xyz[0], xyz[0]))
-        self.subplots['zy'].axes.lines[0].set_xdata((xyz[0], xyz[0]))
+        xyz = np.add(self.indices, 0.5) * self.scaling
+        for c in self.cursors:
+            c.update(xyz)
 
         text = "Autoscale " + ['off','on'][self.settings['autoscale']] + '\n'
         text += "Log scale " + ['off','on'][self.settings['log']] + '\n'
